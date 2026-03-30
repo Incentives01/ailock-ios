@@ -7,6 +7,12 @@ struct SettingsView: View {
     @State private var isSaving = false
     @State private var showLogoutConfirm = false
     @State private var savedMessage: String?
+    @State private var currentPassword = ""
+    @State private var newPassword = ""
+    @State private var confirmPassword = ""
+    @State private var isChangingPassword = false
+    @State private var passwordMessage: String?
+    @State private var passwordMessageIsError = false
 
     var body: some View {
         NavigationView {
@@ -94,6 +100,45 @@ struct SettingsView: View {
                         .listRowBackground(Color.white.opacity(0.06))
                     }
 
+                    // Change Password
+                    Section("Change Password") {
+                        SecureField("", text: $currentPassword, prompt: Text("Current password").foregroundColor(.gray))
+                            .foregroundColor(.white)
+                            .textContentType(.password)
+                            .listRowBackground(Color.white.opacity(0.06))
+
+                        SecureField("", text: $newPassword, prompt: Text("New password").foregroundColor(.gray))
+                            .foregroundColor(.white)
+                            .textContentType(.newPassword)
+                            .listRowBackground(Color.white.opacity(0.06))
+
+                        SecureField("", text: $confirmPassword, prompt: Text("Confirm new password").foregroundColor(.gray))
+                            .foregroundColor(.white)
+                            .textContentType(.newPassword)
+                            .listRowBackground(Color.white.opacity(0.06))
+
+                        Button {
+                            Task { await changePassword() }
+                        } label: {
+                            HStack {
+                                if isChangingPassword {
+                                    ProgressView().tint(Color(hex: "3B82F6"))
+                                }
+                                Text("Update Password")
+                            }
+                            .foregroundColor(Color(hex: "3B82F6"))
+                        }
+                        .listRowBackground(Color.white.opacity(0.06))
+                        .disabled(isChangingPassword || newPassword.isEmpty || currentPassword.isEmpty)
+
+                        if let msg = passwordMessage {
+                            Text(msg)
+                                .font(.caption)
+                                .foregroundColor(passwordMessageIsError ? .red : .green)
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+
                     // Logout
                     Section {
                         Button(role: .destructive) {
@@ -152,6 +197,47 @@ struct SettingsView: View {
                 .font(.subheadline)
         }
         .listRowBackground(Color.white.opacity(0.06))
+    }
+
+    private func changePassword() async {
+        guard newPassword == confirmPassword else {
+            passwordMessage = "Passwords don't match."
+            passwordMessageIsError = true
+            return
+        }
+        guard newPassword.count >= 6 else {
+            passwordMessage = "Password must be at least 6 characters."
+            passwordMessageIsError = true
+            return
+        }
+
+        isChangingPassword = true
+        passwordMessage = nil
+
+        // Verify current password by re-authenticating
+        do {
+            let email = supabase.employee?.email ?? supabase.currentUser?.email ?? ""
+            try await supabase.signIn(email: email, password: currentPassword)
+        } catch {
+            passwordMessage = "Current password is incorrect."
+            passwordMessageIsError = true
+            isChangingPassword = false
+            return
+        }
+
+        do {
+            try await supabase.changePassword(newPassword: newPassword)
+            passwordMessage = "Password updated!"
+            passwordMessageIsError = false
+            currentPassword = ""
+            newPassword = ""
+            confirmPassword = ""
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { passwordMessage = nil }
+        } catch {
+            passwordMessage = "Failed to update password."
+            passwordMessageIsError = true
+        }
+        isChangingPassword = false
     }
 
     private func saveName() async {

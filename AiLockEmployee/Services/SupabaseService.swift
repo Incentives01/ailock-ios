@@ -32,13 +32,13 @@ final class SupabaseService: ObservableObject {
 
     // MARK: - Auth
 
-    func sendMagicLink(email: String) async throws {
-        try await client.auth.signInWithOTP(email: email)
+    func signIn(email: String, password: String) async throws {
+        try await client.auth.signIn(email: email, password: password)
+        await refreshSession()
     }
 
-    func verifyOTP(email: String, token: String) async throws {
-        try await client.auth.verifyOTP(email: email, token: token, type: .email)
-        await refreshSession()
+    func changePassword(newPassword: String) async throws {
+        try await client.auth.update(user: UserAttributes(password: newPassword))
     }
 
     func refreshSession() async {
@@ -102,7 +102,6 @@ final class SupabaseService: ObservableObject {
             throw AiLockError.notAuthenticated
         }
 
-        // Direct insert into attendance_sessions
         struct NewSession: Codable {
             let employee_id: String
             let location_id: String?
@@ -167,7 +166,6 @@ final class SupabaseService: ObservableObject {
             .eq("id", value: sessionId)
             .execute()
 
-        // Fetch to get total_minutes
         struct SessionResult: Codable {
             let clock_in_at: String?
             let clock_out_at: String?
@@ -182,7 +180,6 @@ final class SupabaseService: ObservableObject {
 
         if let mins = session.total_minutes { return mins }
 
-        // Calculate manually if DB didn't compute
         if let inStr = session.clock_in_at, let outStr = session.clock_out_at,
            let inDate = ISO8601DateFormatter().date(from: inStr) ?? DateFormatter.supabase.date(from: inStr),
            let outDate = ISO8601DateFormatter().date(from: outStr) ?? DateFormatter.supabase.date(from: outStr) {
