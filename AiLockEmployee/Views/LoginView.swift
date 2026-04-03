@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject var authViewModel: AuthViewModel
+    @State private var showPassword = false
 
     var body: some View {
         ZStack {
@@ -45,13 +46,29 @@ struct LoginView: View {
                         .cornerRadius(12)
                         .foregroundColor(.white)
 
-                    SecureField("", text: $authViewModel.password, prompt: Text("Password").foregroundColor(.gray))
+                    // Password field with show/hide toggle
+                    HStack {
+                        Group {
+                            if showPassword {
+                                TextField("", text: $authViewModel.password, prompt: Text("Password").foregroundColor(.gray))
+                            } else {
+                                SecureField("", text: $authViewModel.password, prompt: Text("Password").foregroundColor(.gray))
+                            }
+                        }
                         .textFieldStyle(.plain)
                         .textContentType(.password)
-                        .padding()
-                        .background(Color.white.opacity(0.1))
-                        .cornerRadius(12)
                         .foregroundColor(.white)
+
+                        Button {
+                            showPassword.toggle()
+                        } label: {
+                            Image(systemName: showPassword ? "eye.slash.fill" : "eye.fill")
+                                .foregroundColor(.gray)
+                        }
+                    }
+                    .padding()
+                    .background(Color.white.opacity(0.1))
+                    .cornerRadius(12)
 
                     if let error = authViewModel.errorMessage {
                         Text(error)

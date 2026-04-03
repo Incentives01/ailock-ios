@@ -67,25 +67,31 @@ struct QRScannerView: View {
             )
             .padding(.horizontal)
 
-            Text("Point your camera at a location QR code")
-                .font(.subheadline)
-                .foregroundColor(.gray)
+            VStack(spacing: 8) {
+                Text("Point your camera at a location QR code")
+                    .font(.subheadline)
+                    .foregroundColor(.gray)
 
-            if let error = homeViewModel.errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .padding(.horizontal)
+                if let error = homeViewModel.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.horizontal)
 
-                Button("Scan Again") {
-                    scannedCode = nil
-                    scannerResetId = UUID()
-                    homeViewModel.errorMessage = nil
+                    Button("Scan Again") {
+                        scannedCode = nil
+                        scannerResetId = UUID()
+                        homeViewModel.errorMessage = nil
+                    }
+                    .foregroundColor(Color(hex: "3B82F6"))
                 }
-                .foregroundColor(Color(hex: "3B82F6"))
             }
+            .padding(.bottom) // Bottom inset for home indicator / nav bar
 
             Spacer()
+        }
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: 0) // Ensure bottom safe area respected
         }
     }
 

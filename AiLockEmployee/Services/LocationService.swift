@@ -22,6 +22,14 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         manager.requestWhenInUseAuthorization()
     }
 
+    /// Returns the last cached location instantly — no GPS wait.
+    func getLastKnown() -> CLLocation? {
+        if let last = lastLocation { return last }
+        return manager.location
+    }
+
+    /// Requests a fresh location with a 10-second timeout.
+    /// Falls back to last known location if timeout expires.
     func getCurrentLocation() async -> CLLocation? {
         requestPermission()
 
@@ -30,10 +38,31 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
             return last
         }
 
-        return await withCheckedContinuation { continuation in
-            locationContinuation = continuation
-            manager.requestLocation()
+        // Race GPS request against a 10s timeout
+        let result: CLLocation? = await withTaskGroup(of: CLLocation?.self) { group in
+            group.addTask { @MainActor in
+                await withCheckedContinuation { (continuation: CheckedContinuation<CLLocation?, Never>) in
+                    self.locationContinuation = continuation
+                    self.manager.requestLocation()
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
+
+        if let result = result {
+            return result
+        }
+
+        // Timeout — clean up pending continuation, return last known
+        locationContinuation?.resume(returning: nil)
+        locationContinuation = nil
+        return getLastKnown()
     }
 
     // MARK: - CLLocationManagerDelegate
@@ -60,4 +89,5 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
             authorizationStatus = manager.authorizationStatus
         }
     }
+
 }

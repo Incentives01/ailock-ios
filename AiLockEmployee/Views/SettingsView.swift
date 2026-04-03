@@ -10,6 +10,8 @@ struct SettingsView: View {
     @State private var currentPassword = ""
     @State private var newPassword = ""
     @State private var confirmPassword = ""
+    @State private var showCurrentPassword = false
+    @State private var showNewPassword = false
     @State private var isChangingPassword = false
     @State private var passwordMessage: String?
     @State private var passwordMessageIsError = false
@@ -77,13 +79,6 @@ struct SettingsView: View {
                         }
                     }
 
-                    // Info Section
-                    Section("About") {
-                        infoRow("Employee ID", value: supabase.employee?.employeeCode ?? "—")
-                        infoRow("App Version", value: "1.0.0")
-                        infoRow("Security Modes", value: "Secure, Focus, None")
-                    }
-
                     // FamilyControls Status
                     Section("App Blocking") {
                         HStack {
@@ -100,22 +95,51 @@ struct SettingsView: View {
                         .listRowBackground(Color.white.opacity(0.06))
                     }
 
-                    // Change Password
+                    // Change Password (between App Blocking and About)
                     Section("Change Password") {
-                        SecureField("", text: $currentPassword, prompt: Text("Current password").foregroundColor(.gray))
+                        // Current password with show/hide
+                        HStack {
+                            Group {
+                                if showCurrentPassword {
+                                    TextField("", text: $currentPassword, prompt: Text("Current password").foregroundColor(.gray))
+                                } else {
+                                    SecureField("", text: $currentPassword, prompt: Text("Current password").foregroundColor(.gray))
+                                }
+                            }
                             .foregroundColor(.white)
                             .textContentType(.password)
-                            .listRowBackground(Color.white.opacity(0.06))
 
-                        SecureField("", text: $newPassword, prompt: Text("New password").foregroundColor(.gray))
+                            Button {
+                                showCurrentPassword.toggle()
+                            } label: {
+                                Image(systemName: showCurrentPassword ? "eye.slash.fill" : "eye.fill")
+                                    .foregroundColor(.gray)
+                                    .font(.subheadline)
+                            }
+                        }
+                        .listRowBackground(Color.white.opacity(0.06))
+
+                        // New password with show/hide
+                        HStack {
+                            Group {
+                                if showNewPassword {
+                                    TextField("", text: $newPassword, prompt: Text("New password").foregroundColor(.gray))
+                                } else {
+                                    SecureField("", text: $newPassword, prompt: Text("New password").foregroundColor(.gray))
+                                }
+                            }
                             .foregroundColor(.white)
                             .textContentType(.newPassword)
-                            .listRowBackground(Color.white.opacity(0.06))
 
-                        SecureField("", text: $confirmPassword, prompt: Text("Confirm new password").foregroundColor(.gray))
-                            .foregroundColor(.white)
-                            .textContentType(.newPassword)
-                            .listRowBackground(Color.white.opacity(0.06))
+                            Button {
+                                showNewPassword.toggle()
+                            } label: {
+                                Image(systemName: showNewPassword ? "eye.slash.fill" : "eye.fill")
+                                    .foregroundColor(.gray)
+                                    .font(.subheadline)
+                            }
+                        }
+                        .listRowBackground(Color.white.opacity(0.06))
 
                         Button {
                             Task { await changePassword() }
@@ -137,6 +161,13 @@ struct SettingsView: View {
                                 .foregroundColor(passwordMessageIsError ? .red : .green)
                                 .listRowBackground(Color.clear)
                         }
+                    }
+
+                    // Info Section
+                    Section("About") {
+                        infoRow("Employee ID", value: supabase.employee?.employeeCode ?? "—")
+                        infoRow("App Version", value: "1.0.0")
+                        infoRow("Security Modes", value: "Secure, Focus, None")
                     }
 
                     // Logout
@@ -200,11 +231,6 @@ struct SettingsView: View {
     }
 
     private func changePassword() async {
-        guard newPassword == confirmPassword else {
-            passwordMessage = "Passwords don't match."
-            passwordMessageIsError = true
-            return
-        }
         guard newPassword.count >= 6 else {
             passwordMessage = "Password must be at least 6 characters."
             passwordMessageIsError = true
@@ -234,7 +260,7 @@ struct SettingsView: View {
             confirmPassword = ""
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { passwordMessage = nil }
         } catch {
-            passwordMessage = "Failed to update password."
+            passwordMessage = ErrorHelper.message(from: error)
             passwordMessageIsError = true
         }
         isChangingPassword = false
@@ -247,7 +273,7 @@ struct SettingsView: View {
             savedMessage = "Name updated!"
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { savedMessage = nil }
         } catch {
-            savedMessage = "Failed to save."
+            savedMessage = ErrorHelper.message(from: error)
         }
         isSaving = false
     }

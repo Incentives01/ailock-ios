@@ -29,7 +29,7 @@ final class AuthViewModel: ObservableObject {
             try await supabase.signIn(email: trimmedEmail, password: password)
             isAuthenticated = true
         } catch {
-            errorMessage = "Invalid email or password."
+            errorMessage = ErrorHelper.message(from: error)
         }
         isLoading = false
     }

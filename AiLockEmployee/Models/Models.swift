@@ -48,6 +48,15 @@ struct QRPayload: Codable {
     var securityMode: SecurityMode {
         SecurityMode(rawValue: mode) ?? .none
     }
+
+    /// Decoder that ignores unknown keys for forward compatibility.
+    static func decode(from data: Data) throws -> QRPayload {
+        let decoder = JSONDecoder()
+        // JSONDecoder ignores unknown keys by default in Swift,
+        // so this is already forward-compatible. This factory method
+        // makes the intent explicit and centralises decoding.
+        return try decoder.decode(QRPayload.self, from: data)
+    }
 }
 
 // MARK: - Employee

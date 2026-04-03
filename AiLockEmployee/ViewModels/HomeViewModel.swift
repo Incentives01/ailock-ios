@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import AVFoundation
 
 @MainActor
 final class HomeViewModel: ObservableObject {
@@ -17,23 +18,35 @@ final class HomeViewModel: ObservableObject {
     @Published var scannedPayload: QRPayload?
     @Published var showClockInConfirmation = false
 
+    // Permissions
+    @Published var hasCameraPermission = false
+    @Published var hasLocationPermission = false
+    @Published var permissionsChecked = false
+
+    // Remote clock-in — manual location fallback
+    @Published var remoteDetectedAddress: String?
+    @Published var remoteDetectedLat: Double?
+    @Published var remoteDetectedLng: Double?
+    @Published var remoteManualAddress: String = ""
+    @Published var isDetectingLocation = false
+    @Published var showRemoteSheet = false
+
     private let supabase = SupabaseService.shared
     private let location = LocationService.shared
     private let cache = SessionCache.shared
     private var timerTask: Task<Void, Never>?
 
+    // MARK: - Data Loading
+
     func loadData() async {
         isLoading = true
 
-        // Check for active session
         activeSession = await supabase.getActiveSession()
 
-        // If we have a cached session but server says no active session, clear cache
         if activeSession == nil && cache.hasActiveSession() {
             cache.clearSession()
         }
 
-        // If server has active session but no cache, populate cache
         if let session = activeSession, let sid = session.id {
             cache.saveActiveSession(
                 sessionId: sid,
@@ -46,7 +59,6 @@ final class HomeViewModel: ObservableObject {
             startTimer()
         }
 
-        // Today's stats
         let stats = await supabase.getTodayStats()
         todaySessions = stats.sessions
         todayTotalMinutes = stats.totalMinutes
@@ -54,9 +66,47 @@ final class HomeViewModel: ObservableObject {
         isLoading = false
     }
 
+    // MARK: - Permissions
+
+    func checkAndRequestPermissions() async {
+        // Camera
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            hasCameraPermission = true
+        case .notDetermined:
+            let granted = await AVCaptureDevice.requestAccess(for: .video)
+            hasCameraPermission = granted
+        default:
+            hasCameraPermission = false
+        }
+
+        // Location (request after camera)
+        let locStatus = location.authorizationStatus
+        switch locStatus {
+        case .authorizedWhenInUse, .authorizedAlways:
+            hasLocationPermission = true
+        case .notDetermined:
+            location.requestPermission()
+            // Wait briefly for the delegate callback
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            let updated = location.authorizationStatus
+            hasLocationPermission = (updated == .authorizedWhenInUse || updated == .authorizedAlways)
+        default:
+            hasLocationPermission = false
+        }
+
+        permissionsChecked = true
+    }
+
+    var allPermissionsGranted: Bool {
+        hasCameraPermission && hasLocationPermission
+    }
+
+    // MARK: - QR Code
+
     func processQRCode(data: String) {
         guard let jsonData = data.data(using: .utf8),
-              let payload = try? JSONDecoder().decode(QRPayload.self, from: jsonData) else {
+              let payload = try? QRPayload.decode(from: jsonData) else {
             errorMessage = "Invalid QR code. Please scan a valid AiLock location QR."
             return
         }
@@ -64,20 +114,21 @@ final class HomeViewModel: ObservableObject {
         showClockInConfirmation = true
     }
 
+    // MARK: - QR Clock In (Fast)
+
     func clockInWithQR() async {
         guard let payload = scannedPayload else { return }
         isClockingIn = true
         errorMessage = nil
 
-        // Get GPS
-        let loc = await location.getCurrentLocation()
+        // Use last known location instantly — no GPS wait
+        let loc = location.getLastKnown()
         let lat = loc?.coordinate.latitude
         let lng = loc?.coordinate.longitude
 
-        // Reverse geocode
-        var address: String?
-        if let lat = lat, let lng = lng {
-            address = await GeocodingService.reverseGeocode(lat: lat, lng: lng)
+        // If location permission not granted, skip — QR locationId is proof of presence
+        if location.authorizationStatus == .notDetermined {
+            location.requestPermission()
         }
 
         do {
@@ -86,7 +137,7 @@ final class HomeViewModel: ObservableObject {
                 lat: lat,
                 lng: lng,
                 isRemote: false,
-                address: address,
+                address: nil, // Will be updated in background
                 securityMode: payload.mode
             )
 
@@ -103,26 +154,69 @@ final class HomeViewModel: ObservableObject {
             scannedPayload = nil
             successMessage = "Clocked in successfully!"
             await loadData()
+
+            // Update address in background
+            if let lat = lat, let lng = lng {
+                Task {
+                    if let address = await GeocodingService.reverseGeocode(lat: lat, lng: lng) {
+                        try? await supabase.client.from("attendance_sessions")
+                            .update(["clock_in_address": address])
+                            .eq("id", value: sessionId)
+                            .execute()
+                    }
+                }
+            }
         } catch {
-            errorMessage = "Clock in failed: \(error.localizedDescription)"
+            errorMessage = ErrorHelper.message(from: error)
         }
         isClockingIn = false
+    }
+
+    // MARK: - Remote Clock In
+
+    func prepareRemoteClockIn() {
+        remoteDetectedAddress = nil
+        remoteDetectedLat = nil
+        remoteDetectedLng = nil
+        remoteManualAddress = ""
+        showRemoteSheet = true
+        Task { await autoDetectLocation() }
+    }
+
+    func autoDetectLocation() async {
+        isDetectingLocation = true
+        remoteDetectedAddress = nil
+        remoteDetectedLat = nil
+        remoteDetectedLng = nil
+
+        // Request permission if needed
+        if location.authorizationStatus == .notDetermined {
+            location.requestPermission()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+
+        let loc = await location.getCurrentLocation()
+        if let loc = loc {
+            let lat = loc.coordinate.latitude
+            let lng = loc.coordinate.longitude
+            remoteDetectedLat = lat
+            remoteDetectedLng = lng
+            if let address = await GeocodingService.reverseGeocode(lat: lat, lng: lng) {
+                remoteDetectedAddress = address
+            } else {
+                remoteDetectedAddress = String(format: "%.4f, %.4f", lat, lng)
+            }
+        }
+        isDetectingLocation = false
+    }
+
+    var canClockInRemote: Bool {
+        remoteDetectedAddress != nil || !remoteManualAddress.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     func clockInRemote() async {
         isClockingIn = true
         errorMessage = nil
-
-        // Get GPS
-        let loc = await location.getCurrentLocation()
-        let lat = loc?.coordinate.latitude
-        let lng = loc?.coordinate.longitude
-
-        // Reverse geocode
-        var address: String?
-        if let lat = lat, let lng = lng {
-            address = await GeocodingService.reverseGeocode(lat: lat, lng: lng)
-        }
 
         guard let employee = supabase.employee, let bizId = employee.businessId else {
             errorMessage = "Employee profile not found."
@@ -130,14 +224,17 @@ final class HomeViewModel: ObservableObject {
             return
         }
 
+        let lat = remoteDetectedLat
+        let lng = remoteDetectedLng
+        let address = remoteDetectedAddress ?? remoteManualAddress.trimmingCharacters(in: .whitespaces)
+
         do {
-            // For remote, we pass the business ID as a placeholder location
             let sessionId = try await supabase.clockIn(
                 locationId: bizId,
                 lat: lat,
                 lng: lng,
                 isRemote: true,
-                address: address,
+                address: address.isEmpty ? nil : address,
                 securityMode: "none"
             )
 
@@ -150,13 +247,16 @@ final class HomeViewModel: ObservableObject {
                 isRemote: true
             )
 
+            showRemoteSheet = false
             successMessage = "Clocked in remotely!"
             await loadData()
         } catch {
-            errorMessage = "Remote clock in failed: \(error.localizedDescription)"
+            errorMessage = ErrorHelper.message(from: error)
         }
         isClockingIn = false
     }
+
+    // MARK: - Clock Out
 
     func clockOut() async {
         guard let sessionId = activeSession?.id ?? cache.sessionId else {
@@ -167,8 +267,8 @@ final class HomeViewModel: ObservableObject {
         isClockingOut = true
         errorMessage = nil
 
-        // Get GPS for clock out
-        let loc = await location.getCurrentLocation()
+        // Use last known location (instant) instead of fresh GPS fix
+        let loc = location.getLastKnown()
         let lat = loc?.coordinate.latitude
         let lng = loc?.coordinate.longitude
 
@@ -194,7 +294,16 @@ final class HomeViewModel: ObservableObject {
             successMessage = "Clocked out! Total: \(h > 0 ? "\(h)h " : "")\(m)m"
             await loadData()
         } catch {
-            errorMessage = "Clock out failed: \(error.localizedDescription)"
+            let msg = ErrorHelper.message(from: error)
+            if msg == "session_not_active" {
+                // Session already ended server-side — silently refresh
+                stopTimer()
+                cache.clearSession()
+                activeSession = nil
+                await loadData()
+            } else {
+                errorMessage = msg
+            }
         }
         isClockingOut = false
     }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct HomeView: View {
     @EnvironmentObject var homeViewModel: HomeViewModel
@@ -13,6 +14,11 @@ struct HomeView: View {
                     VStack(spacing: 20) {
                         // Greeting
                         greetingSection
+
+                        // Permissions card (if any missing)
+                        if homeViewModel.permissionsChecked && !homeViewModel.allPermissionsGranted {
+                            permissionsCard
+                        }
 
                         // Active Session Card or Clock In options
                         if homeViewModel.activeSession != nil {
@@ -38,16 +44,22 @@ struct HomeView: View {
                         }
                     }
                     .padding()
+                    .padding(.top, 1) // Extra inset for status bar area
                 }
             }
             .navigationTitle("Home")
             .navigationBarTitleDisplayMode(.large)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .task {
+                await homeViewModel.checkAndRequestPermissions()
                 await homeViewModel.loadData()
             }
             .refreshable {
+                await homeViewModel.checkAndRequestPermissions()
                 await homeViewModel.loadData()
+            }
+            .sheet(isPresented: $homeViewModel.showRemoteSheet) {
+                remoteClockInSheet
             }
         }
         .navigationViewStyle(.stack)
@@ -82,11 +94,77 @@ struct HomeView: View {
         return "Good evening"
     }
 
+    // MARK: - Permissions Card
+
+    private var permissionsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.red)
+                Text("Permissions Required")
+                    .font(.headline)
+                    .foregroundColor(.red)
+            }
+
+            if !homeViewModel.hasCameraPermission {
+                permissionRow(icon: "camera.fill", label: "Camera", action: "Required for QR scanning") {
+                    openSettings()
+                }
+            }
+            if !homeViewModel.hasLocationPermission {
+                permissionRow(icon: "location.fill", label: "Location", action: "Required for clock-in") {
+                    openSettings()
+                }
+            }
+        }
+        .padding()
+        .background(Color.red.opacity(0.1))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.red.opacity(0.3), lineWidth: 1)
+        )
+        .cornerRadius(16)
+    }
+
+    private func permissionRow(icon: String, label: String, action: String, onTap: @escaping () -> Void) -> some View {
+        Button(action: onTap) {
+            HStack {
+                Image(systemName: icon)
+                    .foregroundColor(.white)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                    Text(action)
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+                Spacer()
+                Text("Enable")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.red.opacity(0.3))
+                    .foregroundColor(.red)
+                    .cornerRadius(6)
+            }
+        }
+    }
+
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
+    }
+
     // MARK: - Active Session Card
 
     private var activeSessionCard: some View {
         VStack(spacing: 16) {
-            // Mode badge
+            // Mode badge — prominent for secure/focus
             modeBadge(homeViewModel.currentMode)
 
             // Status
@@ -163,12 +241,9 @@ struct HomeView: View {
 
             // Remote Clock In Button
             Button {
-                Task { await homeViewModel.clockInRemote() }
+                homeViewModel.prepareRemoteClockIn()
             } label: {
                 HStack {
-                    if homeViewModel.isClockingIn {
-                        ProgressView().tint(.white)
-                    }
                     Image(systemName: "wifi")
                     Text("Clock In (Remote)")
                         .fontWeight(.semibold)
@@ -183,7 +258,7 @@ struct HomeView: View {
                         .stroke(Color(hex: "3B82F6").opacity(0.5), lineWidth: 1)
                 )
             }
-            .disabled(homeViewModel.isClockingIn)
+            .disabled(!homeViewModel.allPermissionsGranted && homeViewModel.permissionsChecked)
 
             Text("Or scan a location QR code in the Scan tab")
                 .font(.caption)
@@ -192,6 +267,117 @@ struct HomeView: View {
         .padding()
         .background(Color.white.opacity(0.06))
         .cornerRadius(16)
+    }
+
+    // MARK: - Remote Clock In Sheet
+
+    private var remoteClockInSheet: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(spacing: 20) {
+                        // Auto-detected location
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Your Location")
+                                .font(.headline)
+                                .foregroundColor(.white)
+
+                            if homeViewModel.isDetectingLocation {
+                                HStack {
+                                    ProgressView().tint(.white)
+                                    Text("Detecting location...")
+                                        .foregroundColor(.gray)
+                                }
+                            } else if let addr = homeViewModel.remoteDetectedAddress {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(addr)
+                                            .font(.subheadline)
+                                            .foregroundColor(.white)
+                                        if let lat = homeViewModel.remoteDetectedLat,
+                                           let lng = homeViewModel.remoteDetectedLng {
+                                            Text(String(format: "%.4f, %.4f", lat, lng))
+                                                .font(.caption)
+                                                .foregroundColor(.gray)
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Location failed — show manual input
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Could not detect location automatically.")
+                                        .font(.subheadline)
+                                        .foregroundColor(.gray)
+
+                                    Button {
+                                        Task { await homeViewModel.autoDetectLocation() }
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "location.fill")
+                                            Text("Auto Detect Location")
+                                        }
+                                        .font(.subheadline)
+                                        .foregroundColor(Color(hex: "3B82F6"))
+                                    }
+
+                                    TextField("", text: $homeViewModel.remoteManualAddress,
+                                              prompt: Text("Enter location (e.g. Home, Coffee Shop)")
+                                                .foregroundColor(.gray))
+                                        .foregroundColor(.white)
+                                        .padding()
+                                        .background(Color.white.opacity(0.1))
+                                        .cornerRadius(12)
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(Color.white.opacity(0.06))
+                        .cornerRadius(16)
+
+                        // Clock In button
+                        Button {
+                            Task { await homeViewModel.clockInRemote() }
+                        } label: {
+                            HStack {
+                                if homeViewModel.isClockingIn {
+                                    ProgressView().tint(.white)
+                                }
+                                Image(systemName: "wifi")
+                                Text("Clock In")
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(homeViewModel.canClockInRemote ? Color(hex: "3B82F6") : Color.gray.opacity(0.3))
+                            .foregroundColor(.white)
+                            .cornerRadius(12)
+                        }
+                        .disabled(!homeViewModel.canClockInRemote || homeViewModel.isClockingIn)
+
+                        if let msg = homeViewModel.errorMessage {
+                            messageCard(msg, color: .red)
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("Remote Clock In")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        homeViewModel.showRemoteSheet = false
+                    }
+                    .foregroundColor(.gray)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 
     // MARK: - Today Summary
@@ -232,9 +418,9 @@ struct HomeView: View {
         HStack(spacing: 6) {
             Image(systemName: mode == .secure ? "lock.fill" : mode == .focus ? "eye.slash.fill" : "checkmark.circle.fill")
                 .font(.caption)
-            Text(mode.displayName)
+            Text(mode == .secure ? "SECURE MODE" : mode == .focus ? "FOCUS MODE" : mode.displayName)
                 .font(.caption)
-                .fontWeight(.medium)
+                .fontWeight(.bold)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
